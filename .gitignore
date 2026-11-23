@@ -15,3 +15,6 @@ corpus/
 
 # Internal study notes, not part of the submission
 DECISIONS.md
+
+# Personal editor settings
+.vscode/settings.json

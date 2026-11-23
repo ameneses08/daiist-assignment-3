@@ -8,7 +8,8 @@ stores them in index/ (ChromaDB). Vectors are saved batch by batch, and a chunk
 that already has a saved vector is never embedded again, so a crash or the
 daily quota loses nothing: run it again tomorrow and it carries on.
 
-server.py's add_document tool imports `chunk_file` and `embed_and_store`.
+server.py's add_document tool imports this pipeline (`index_file`, which runs `chunk_file` and
+`embed_and_store`), so the server has no second copy of the chunking logic.
 """
 
 from __future__ import annotations
@@ -415,7 +416,7 @@ def span(locs: list[str]) -> str:
 def make_chunk(design: str, doc: dict, units: list[Unit], text: str) -> Chunk:
     locs = list(dict.fromkeys(l for u in units for l in u.locs))
     section = units[0].section
-    body = text if design == "fixed" else text
+    body = text
     title = doc["title"] if design == "fixed" else f"{doc['source']}: {section}"
     cid = hashlib.sha256(f"{design}|{doc['source']}|{title}|{body}".encode()).hexdigest()[:20]
     return Chunk(cid, design, doc["source"], doc["title"], doc["url"], span(locs), locs,
@@ -498,8 +499,6 @@ def embed_and_store(doc: dict, chunks: list[Chunk], doc_hash: str, design: str) 
     old = col.get(where={"source": doc["source"]}, include=[])["ids"]
     new_ids = [c.id for c in chunks]
     stale = sorted(set(old) - set(new_ids))
-    if stale:
-        col.delete(ids=stale)
     have = set(col.get(ids=new_ids, include=[])["ids"]) if new_ids else set()
     todo = [c for c in chunks if c.id not in have]
     # refresh metadata of chunks we keep (e.g. a new file hash)
@@ -512,6 +511,8 @@ def embed_and_store(doc: dict, chunks: list[Chunk], doc_hash: str, design: str) 
         col.add(ids=[c.id for c in batch], embeddings=vectors, documents=[c.text for c in batch],
                 metadatas=[c.metadata(doc_hash) for c in batch])
         log(f"  {design}: embedded {min(i + rag.EMBED_BATCH, len(todo))}/{len(todo)} new chunks of {doc['source']}")
+    if stale:   # only after every new chunk is stored, so a quota stop never leaves a document half replaced
+        col.delete(ids=stale)
     return {"chunks": len(chunks), "embedded": len(todo), "reused": len(kept), "removed": len(stale)}
 
 
@@ -566,6 +567,8 @@ def main() -> int:
             log(f"wrote {p}")
         return 0
     paths = [download(doc) for doc in DOCS]
+    for doc in EXTRA_DOCS:   # downloaded for the add-document test, not indexed here
+        download(doc)
     total_words = 0
     for path in paths:
         units = extract(path)

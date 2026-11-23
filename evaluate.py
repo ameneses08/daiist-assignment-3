@@ -46,7 +46,7 @@ SECONDS_PER_CALL = float(os.environ.get("EVAL_SECONDS_PER_CALL", "4.5"))
 # The design comparison always runs on the original corpus, also after add_document added more.
 BASE_SOURCES = ["GDPR", "EDPB 05/2020", "EDPB 9/2022"]
 
-# Retrieval designs compared (D11). "fixed + hybrid" separates the effect of keyword search from chunking.
+# Retrieval designs compared (REPORT.md, Retrieval). "fixed + hybrid" separates the effect of keyword search from chunking.
 CONFIGS = [
     ("A fixed (vector)", "fixed", "vector"),
     ("B structure (vector)", "structure", "vector"),

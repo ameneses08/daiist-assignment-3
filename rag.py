@@ -34,7 +34,7 @@ EMBED_BATCH = 20         # texts per request
 DESIGNS = ["fixed", "structure"]
 # The design the server and agent use. Chosen from the hit-rate numbers (see REPORT.md).
 ACTIVE_DESIGN = "structure"
-ACTIVE_METHOD = "vector"  # "vector", "bm25" or "hybrid" — chosen by hit rate, see DECISIONS.md D18
+ACTIVE_METHOD = "vector"  # "vector", "bm25" or "hybrid" — chosen by hit rate (REPORT.md, Retrieval)
 TOP_K = 5
 
 

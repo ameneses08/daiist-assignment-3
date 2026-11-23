@@ -27,7 +27,8 @@ from pathlib import Path
 from typing import Callable
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, ModelCallLimitMiddleware, ToolCallLimitMiddleware
+from langchain.agents.middleware import (HumanInTheLoopMiddleware, ModelCallLimitMiddleware, ModelFallbackMiddleware,
+                                         ToolCallLimitMiddleware)
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -42,6 +43,8 @@ from api_key import load_api_key
 ROOT = Path(__file__).resolve().parent
 SYSTEM_PROMPT = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 MODEL = os.environ.get("AGENT_MODEL", "gemini-3.5-flash-lite")
+# Used only when MODEL fails (e.g. 503 "high demand" on the free tier), so a busy model doesn't fail the run.
+FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-3.5-flash"]
 MAX_SEARCHES = 4          # AGENTS.md asks for up to 3; one spare before the limit stops it
 MAX_MODEL_CALLS = 8
 REFUSAL = "I can't answer this from the documents I have."
@@ -49,6 +52,11 @@ REFUSAL = "I can't answer this from the documents I have."
 
 def is_refusal(answer: str) -> bool:
     return REFUSAL.lower().rstrip(".") in answer.lower().replace("’", "'")
+
+
+def overloaded(error: Exception) -> bool:
+    message = f"{type(error).__name__} {error}"
+    return any(k in message for k in ("503", "UNAVAILABLE", "high demand", "overloaded"))
 
 
 def text_of(message) -> str:
@@ -98,10 +106,12 @@ class Harness:
         await self.session.initialize()
         tools = await load_tools(self.session)
         # Gemini 3 models are meant to run at their default temperature (Google advises against lowering it).
-        model = ChatGoogleGenerativeAI(model=self.model_name, max_retries=6)
+        model = ChatGoogleGenerativeAI(model=self.model_name, max_retries=2)
+        fallbacks = [ChatGoogleGenerativeAI(model=m, max_retries=2) for m in FALLBACK_MODELS if m != self.model_name]
         self.agent = create_agent(
             model, tools, system_prompt=SYSTEM_PROMPT, checkpointer=InMemorySaver(),
             middleware=[
+                ModelFallbackMiddleware(*fallbacks),
                 HumanInTheLoopMiddleware(interrupt_on={"add_document": True}),
                 ToolCallLimitMiddleware(run_limit=MAX_SEARCHES),
                 ModelCallLimitMiddleware(run_limit=MAX_MODEL_CALLS, exit_behavior="end"),
@@ -128,9 +138,19 @@ class Harness:
 
     async def ask(self, question: str) -> dict:
         started = time.time()
-        config = {"configurable": {"thread_id": str(uuid.uuid4())}, "recursion_limit": 40}
         events: list[dict] = []
-        state = await self._run({"messages": [HumanMessage(question)]}, config, events)
+        # If every model is overloaded (503 "high demand" on the free tier), wait and try again.
+        for attempt in range(3):
+            config = {"configurable": {"thread_id": str(uuid.uuid4())}, "recursion_limit": 40}
+            try:
+                state = await self._run({"messages": [HumanMessage(question)]}, config, events)
+                break
+            except Exception as error:
+                if attempt < 2 and overloaded(error):
+                    print(f"[models overloaded; retrying in {20 * (attempt + 1)} s]", file=sys.stderr)
+                    await asyncio.sleep(20 * (attempt + 1))
+                    continue
+                raise
         answer, retrieved = self._answer(state), self._retrieved(state)
 
         # Guardrail: citations must match retrieved passages; one chance to fix, then withhold.
@@ -153,10 +173,12 @@ class Harness:
 
         valid, invalid = rag.check_citations(answer, retrieved)
         usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        model_calls = 0
+        model_calls, used = 0, []
         for m in state["messages"]:
             if isinstance(m, AIMessage):
                 model_calls += 1
+                name = (m.response_metadata or {}).get("model_name") or self.model_name
+                used.append(name.removeprefix("models/"))
                 for k in usage:
                     usage[k] += (m.usage_metadata or {}).get(k, 0)
         return {
@@ -169,6 +191,7 @@ class Harness:
                                           if isinstance(m, ToolMessage) and m.name == "search"),
             "guardrail_events": events, "model_calls": model_calls, **usage,
             "seconds": round(time.time() - started, 2), "model": self.model_name,
+            "models_used": sorted(set(used)),   # differs from "model" only if a fallback answered
         }
 
     @staticmethod
