@@ -1,0 +1,5 @@
+id,kind,outcome,correct,supported,expected_passage_retrieved,suggested_cause,my_cause,notes
+q10,multi,answered,0,1,True,wrong answer from the right passage,,
+q12,multi,answered,0,1,True,wrong answer from the right passage,,
+q20,unanswerable,missed refusal,0,1,False,missed refusal (answered an unanswerable question),,
+q22,multi,answered,0,1,True,wrong answer from the right passage,,

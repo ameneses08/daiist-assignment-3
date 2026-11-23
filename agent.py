@@ -41,7 +41,7 @@ from api_key import load_api_key
 
 ROOT = Path(__file__).resolve().parent
 SYSTEM_PROMPT = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-MODEL = os.environ.get("AGENT_MODEL", "gemini-3-flash-preview")
+MODEL = os.environ.get("AGENT_MODEL", "gemini-3.5-flash-lite")
 MAX_SEARCHES = 4          # AGENTS.md asks for up to 3; one spare before the limit stops it
 MAX_MODEL_CALLS = 8
 REFUSAL = "I can't answer this from the documents I have."

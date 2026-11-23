@@ -253,3 +253,87 @@ cited passage was retrieved, not that it says what the claim says — that's the
 **Why.** `langchain-mcp-adapters` 0.3.1 is incompatible with `mcp` 2.3 (import error), and `mcp`
 2.3 is what `check.py` and the server use. ~15 lines in `agent.py` start `server.py` over stdio,
 list its tools and wrap each as a LangChain tool — the agent uses the same server as the editor.
+
+---
+
+## D17 · LLM judge: model and rubric (strict "correct")
+
+**Judge model:** `gemini-3.5-flash` — a *different* model from the agent (`gemini-3-flash-preview`),
+so the judge is not grading its own style. Pro models are not on the free tier (quota error);
+3.5-flash is slow (~30 s per call) but that only matters for a batch run.
+
+**Rubric** (the judge sees the question, my reference answer, the retrieved passages and the answer):
+
+| Score | 1 when… | 0 when… |
+|---|---|---|
+| **Correct** (vs my reference) | Same conclusion (yes/no, deadline, who to notify) **and every condition, exception and element my reference lists**, nothing contradicted | Different conclusion, a wrong number/party, or **any** listed condition/exception missing |
+| **Supported** (vs retrieved text, not reality) | Every factual claim is in or follows directly from the retrieved passages | Any claim not in the passages — even if it is true. The judge lists them |
+
+**Why strict.** For a small business a missed exception is a missed obligation (e.g. "notify
+within 72 h" without "…unless unlikely to result in a risk" leads to over- or under-reporting).
+**Consequence:** my reference answers must list exactly the conditions that matter — no more,
+or the judge will fail good answers.
+
+**Refusals are graded by code**, not by the judge: refusal on an unanswerable question = correct;
+on an answerable one = wrong refusal.
+
+**Why "supported" is judged against the retrieved text, not the truth.** It measures whether the
+system makes things up. A true-but-unretrieved claim is still a failure of grounding — the user
+can't verify it.
+
+---
+
+## D18 · Retrieval design chosen: **B · structure-based chunks, vector search**
+
+Hit rate on my 20 answerable questions (final run 23 Nov, with the final expected locations;
+`eval/retrieval_summary.csv`):
+
+| Design | hit@1 | hit@3 | hit@5 | both passages found @5 (multi) | MRR@5 | words added to prompt (top 5) |
+|---|---|---|---|---|---|---|
+| A · fixed, vector | 0.55 | 0.85 | **0.90** | 0.50 | 0.688 | 1,000 |
+| **B · structure, vector** | **0.70** | 0.85 | 0.85 | **0.583** | **0.767** | **906** |
+| C · structure + hybrid | 0.30 | 0.55 | 0.65 | 0.417 | 0.433 | 921 |
+| A · fixed + hybrid | 0.30 | 0.55 | 0.75 | 0.333 | 0.464 | 1,000 |
+
+(A first run, before I corrected some expected locations, had A at 0.70/0.85 for hit@3/@5 — the
+locations, not the system, changed.)
+
+**Why B, although A finds one more question in the top 5.** B wins where it matters most for
+an agent that reads the top results: rank 1 (+15 points = 3 questions), MRR (0.767 vs 0.688),
+finding *both* passages for two-passage questions (0.583 vs 0.50), and it puts ~10% fewer words
+into the prompt. hit@3 is a tie. A's edge at hit@5 is a single question. By my rule (D11) —
+highest hit rates, ties to the cheaper design — B is the better trade.
+
+**Surprise: hybrid (keyword) search made things worse** for both chunkings. Likely reason:
+my questions are written like a real user ("I run a small business… my customers…"), so the
+keyword side matches filler words (business, customer, data) that appear everywhere, and the
+fusion gives that weak ranking equal weight, pushing good vector hits down. Keyword search
+helps with exact terms ("Article 33"), which my users rarely type.
+
+**Caveats to state in the report.** Only 20 answerable questions, so one question = 5 points;
+the differences between A and B are 1–3 questions. A and B differ in two ways (boundaries and
+heading in the embedding), so the win can't be pinned on one of them. 3 of 20 questions are not
+in B's top 5: candidates for "retrieval miss" in the failure analysis.
+
+**Changed:** `rag.ACTIVE_METHOD = "vector"` (was "hybrid") — the server and agent use B.
+
+---
+
+## D19 · Models switched to "lite" because of free-tier daily limits
+
+**What happened.** The first full evaluation stopped after 6 questions: `gemini-3-flash-preview`
+allows only **20 requests per day** on the free tier, and each question takes 2–5 model calls.
+The judge (`gemini-3.5-flash`) was overloaded (503) at the same time; the 3.6–3.8 flash models too.
+
+**Now:** agent = `gemini-3.5-flash-lite`, judge = `gemini-3.1-flash-lite` — still two
+*different* models, each with its own quota, and both answer in ~1 s. A test question took
+2 model calls, 1 search, 3 s, ~4,800 tokens, with all citations valid.
+
+**Trade-off.** Lite models are weaker: the agent may follow AGENTS.md less faithfully, and a
+weaker judge agrees less with a human — which is exactly what my 20+ own grades measure.
+All 30 questions are re-asked with the new model (answers from two models are never mixed).
+
+**Lesson for the report.** Cost per question isn't only tokens and seconds: on a free tier
+the binding limit is *requests per day per model*, so an agent's number of model calls per
+question decides how many users it can serve. Also fixed: failed answers are no longer reused,
+errors are shown as errors, and a daily-quota error stops the run cleanly.
