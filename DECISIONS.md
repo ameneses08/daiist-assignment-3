@@ -337,3 +337,23 @@ All 30 questions are re-asked with the new model (answers from two models are ne
 the binding limit is *requests per day per model*, so an agent's number of model calls per
 question decides how many users it can serve. Also fixed: failed answers are no longer reused,
 errors are shown as errors, and a daily-quota error stops the run cleanly.
+
+---
+
+## D20 · Add-document test: q18 before and after (`eval/examples/add_doc_*.txt`)
+
+**Question (q18, unanswerable):** a cloud provider only offers its own non-negotiable standard
+contract — does that make it a controller instead of my processor?
+
+| Step | Result |
+|---|---|
+| Before | Refused ("I can't answer this from the documents I have"), pointed to the AEPD / a lawyer |
+| Add (human approved) | EDPB Guidelines 07/2020 extracted, 120 chunks embedded into the active design |
+| After | **No** — standard, unilaterally drafted terms don't by themselves make the provider a controller; the customer chose the service for its own purposes and stays responsible for accepting compliant terms. Cited `[EDPB 07/2020 \| para. 30]` and `para. 110` |
+| Same file again | "Already indexed" — skipped, 0 embeddings (D12 policy) |
+| Add, human said no | Not added (approval guardrail) |
+
+**Why this matters.** It shows the refusal was a *coverage* gap, not a reasoning failure: the
+same agent answers correctly once the right document is in the index. Also the main evaluation
+results were computed *before* the add (answers are cached), and the design comparison is
+restricted to the original three documents so A and B stay comparable.

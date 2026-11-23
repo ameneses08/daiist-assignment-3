@@ -78,7 +78,8 @@ def ask_human(action: dict) -> bool:
         return False
     print(f"\nThe agent wants to run {action['name']} with {action['args']}.", file=sys.stderr)
     print("This adds the file to the index for every later question and spends embedding quota.", file=sys.stderr)
-    return input("Approve? [y/N] ").strip().lower() in ("y", "yes")
+    print("Approve? [y/N] ", end="", file=sys.stderr, flush=True)   # stderr: visible even when stdout is piped
+    return input().strip().lower() in ("y", "yes")
 
 
 class Harness:
@@ -133,7 +134,10 @@ class Harness:
         answer, retrieved = self._answer(state), self._retrieved(state)
 
         # Guardrail: citations must match retrieved passages; one chance to fix, then withhold.
-        problem = self._citation_problem(answer, retrieved)
+        # Not applied to a turn that was an add_document request: its reply reports an action, not facts.
+        added = any(c["name"] == "add_document" for m in state["messages"] if isinstance(m, AIMessage)
+                    for c in m.tool_calls)
+        problem = None if added else self._citation_problem(answer, retrieved)
         if problem:
             events.append({"guardrail": "citations", "attempt": 1, "problem": problem, "draft": answer})
             fix = (f"Your answer was not accepted: {problem} Rewrite it using only the passages already "
@@ -198,6 +202,9 @@ def print_result(r: dict) -> None:
         print("\nCitations checked against the retrieved passages:")
         for c in dict.fromkeys(r["citations"]):
             print(f"  ✓ {c}")
+    for e in r["guardrail_events"]:
+        if e["guardrail"] == "approval":
+            print(f"\n(Approval: {e['tool']}({e['args']}) was {'APPROVED' if e['approved'] else 'REJECTED'} by the human.)")
     fired = [e for e in r["guardrail_events"] if e["guardrail"] == "citations"]
     if fired:
         print(f"\n(Citation guardrail fired {len(fired)} time(s): {fired[0]['problem']})")

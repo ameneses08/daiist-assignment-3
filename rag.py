@@ -186,34 +186,36 @@ class BM25:
         return [x for x in scores[:k] if x[1] > 0]
 
 
-_bm25: dict[str, tuple[int, BM25]] = {}
+_bm25: dict[tuple, tuple[int, BM25]] = {}
 
 
-def bm25_for(design: str) -> BM25:
+def bm25_for(design: str, sources: list[str] | None = None) -> BM25:
+    """Keyword index over the collection (or only some documents, so word statistics match)."""
     col = collection(design)
     count = col.count()
-    if design not in _bm25 or _bm25[design][0] != count:   # rebuilt after add_document
-        data = col.get(include=["documents"])
-        _bm25[design] = (count, BM25(data["ids"], data["documents"]))
-    return _bm25[design][1]
+    key = (design, tuple(sorted(sources or [])))
+    if key not in _bm25 or _bm25[key][0] != count:   # rebuilt after add_document
+        where = {"source": {"$in": list(sources)}} if sources else None
+        data = col.get(where=where, include=["documents"])
+        _bm25[key] = (count, BM25(data["ids"], data["documents"]))
+    return _bm25[key][1]
 
 
 def search(query: str, k: int = TOP_K, design: str = ACTIVE_DESIGN, method: str = ACTIVE_METHOD,
-           source: str | None = None) -> list[dict]:
-    """Return the top-k chunks as dicts: id, text, score and metadata (source, location, ...)."""
+           sources: list[str] | None = None) -> list[dict]:
+    """Return the top-k chunks as dicts: id, text, score and metadata (source, location, ...).
+    `sources` restricts the search to those documents (evaluate.py keeps the design comparison
+    on the original corpus even after add_document)."""
     col = collection(design)
     pool = max(k * 4, 20)
-    ranked: list[str] = []
+    vector_ids: list[str] = []
+    bm25_ids: list[str] = []
     if method in ("vector", "hybrid"):
-        where = {"source": source} if source else None
+        where = {"source": {"$in": list(sources)}} if sources else None
         res = col.query(query_embeddings=[embed_query(query)], n_results=min(pool, col.count()), where=where)
         vector_ids = res["ids"][0]
     if method in ("bm25", "hybrid"):
-        bm = bm25_for(design).top(query, pool * 3)
-        if source:
-            meta = dict(zip(*[col.get(ids=[i for i, _ in bm], include=["metadatas"])[x] for x in ("ids", "metadatas")]))
-            bm = [(i, s) for i, s in bm if meta[i]["source"] == source]
-        bm25_ids = [i for i, _ in bm][:pool]
+        bm25_ids = [i for i, _ in bm25_for(design, sources).top(query, pool)]
     if method == "vector":
         ranked = vector_ids
     elif method == "bm25":

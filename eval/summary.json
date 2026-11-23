@@ -75,6 +75,25 @@
     }
   ],
   "judge_vs_me": {
-    "graded_by_me": 0
+    "graded_by_me": 21,
+    "correct": {
+      "n": 21,
+      "agreement": 0.905,
+      "cohen_kappa": 0.618,
+      "me_1_rate": 0.905,
+      "judge_1_rate": 0.81,
+      "disagreements": [
+        "q12",
+        "q22"
+      ]
+    },
+    "supported": {
+      "n": 21,
+      "agreement": 1.0,
+      "cohen_kappa": "undefined (no variation)",
+      "me_1_rate": 1.0,
+      "judge_1_rate": 1.0,
+      "disagreements": []
+    }
   }
 }

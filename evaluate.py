@@ -43,6 +43,9 @@ KS = (1, 3, 5)
 # Free tier of the lite models: 15 requests per minute. Keep every model call >= 4.5 s apart on average.
 SECONDS_PER_CALL = float(os.environ.get("EVAL_SECONDS_PER_CALL", "4.5"))
 
+# The design comparison always runs on the original corpus, also after add_document added more.
+BASE_SOURCES = ["GDPR", "EDPB 05/2020", "EDPB 9/2022"]
+
 # Retrieval designs compared (D11). "fixed + hybrid" separates the effect of keyword search from chunking.
 CONFIGS = [
     ("A fixed (vector)", "fixed", "vector"),
@@ -96,7 +99,7 @@ def evaluate_retrieval(questions: list[dict]) -> tuple[list[dict], list[dict]]:
     for name, design, method in CONFIGS:
         firsts, alls, words = [], [], []
         for q in answerable:
-            chunks = rag.search(q["question"], k=max(KS), design=design, method=method)
+            chunks = rag.search(q["question"], k=max(KS), design=design, method=method, sources=BASE_SOURCES)
             hits = [i + 1 for i, c in enumerate(chunks) if any(chunk_matches(c, s, l) for s, l in q["expected"])]
             first = hits[0] if hits else None
             # rank at which ALL expected passages have been seen (multi questions)
@@ -339,8 +342,10 @@ def agreement(rows: list[dict]) -> dict:
         agree = sum(h == j for h, j in pairs) / len(pairs)
         ph, pj = sum(h for h, _ in pairs) / len(pairs), sum(j for _, j in pairs) / len(pairs)
         chance = ph * pj + (1 - ph) * (1 - pj)
-        kappa = (agree - chance) / (1 - chance) if chance < 1 else 1.0
-        out[field] = {"n": len(pairs), "agreement": round(agree, 3), "cohen_kappa": round(kappa, 3),
+        # kappa is undefined when both raters gave the same label to every item (no variation)
+        kappa = round((agree - chance) / (1 - chance), 3) if chance < 1 else "undefined (no variation)"
+        out[field] = {"n": len(pairs), "agreement": round(agree, 3), "cohen_kappa": kappa,
+                      "me_1_rate": round(ph, 3), "judge_1_rate": round(pj, 3),
                       "disagreements": [r["id"] for r in rows if r["id"] in human
                                         and str(human[r["id"]].get(field, "")).strip() in ("0", "1")
                                         and r[field] != "" and int(human[r["id"]][field]) != int(r[field])]}
@@ -353,12 +358,13 @@ def suggest_cause(q: dict, r: dict) -> str:
     """A first guess from the checks; the final classification is mine (REPORT.md)."""
     if r["outcome"] == "missed refusal":
         return "unsupported claim" if r["supported"] == 0 else "missed refusal (answered an unanswerable question)"
+    # "right passage" only if ALL expected passages were retrieved (a multi question can be half-missed)
     if r["outcome"] == "wrong refusal":
-        return "wrong refusal" if r["any_expected_passage_retrieved"] else "retrieval miss"
+        return "wrong refusal" if r["expected_passage_retrieved"] else "retrieval miss"
     if r["supported"] == 0:
         return "unsupported claim"
     if r["correct"] == 0:
-        return "wrong answer from the right passage" if r["any_expected_passage_retrieved"] else "retrieval miss"
+        return "wrong answer from the right passage" if r["expected_passage_retrieved"] else "retrieval miss"
     return ""
 
 
@@ -411,11 +417,20 @@ def main() -> int:
         r["suggested_cause"] = suggest_cause(q, r) if r["correct"] != "" else ""
         rows.append(r)
     write_csv(EVAL / "results.csv", rows)
-    write_csv(EVAL / "failures.csv", [{"id": r["id"], "kind": r["kind"], "outcome": r["outcome"],
-                                       "correct": r["correct"], "supported": r["supported"],
-                                       "expected_passage_retrieved": r["any_expected_passage_retrieved"],
-                                       "suggested_cause": r["suggested_cause"], "my_cause": "", "notes": ""}
-                                      for r in rows if r["suggested_cause"]])
+    # my own classification (my_cause, notes) is kept across re-runs
+    mine = {}
+    if (EVAL / "failures.csv").is_file():
+        with (EVAL / "failures.csv").open(newline="", encoding="utf-8") as f:
+            mine = {r["id"]: r for r in csv.DictReader(f)}
+    failure_ids = [r["id"] for r in rows if r["suggested_cause"]] + [i for i in mine if mine[i].get("my_cause")]
+    by_id = {r["id"]: r for r in rows}
+    write_csv(EVAL / "failures.csv", [{"id": i, "kind": by_id[i]["kind"], "outcome": by_id[i]["outcome"],
+                                       "correct": by_id[i]["correct"], "supported": by_id[i]["supported"],
+                                       "all_expected_retrieved": by_id[i]["expected_passage_retrieved"],
+                                       "suggested_cause": by_id[i]["suggested_cause"],
+                                       "my_cause": mine.get(i, {}).get("my_cause", ""),
+                                       "notes": mine.get(i, {}).get("notes", "")}
+                                      for i in dict.fromkeys(failure_ids) if i in by_id])
 
     answerable = [r for r in rows if r["kind"] != "unanswerable"]
     unanswerable = [r for r in rows if r["kind"] == "unanswerable"]
