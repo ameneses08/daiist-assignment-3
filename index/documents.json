@@ -12,7 +12,7 @@
       "fixed": 170,
       "structure": 187
     },
-    "updated": "2026-11-23T11:40:14+00:00"
+    "updated": "2026-11-23T11:47:26+00:00"
   },
   "EDPB 05/2020": {
     "source": "EDPB 05/2020",
@@ -27,7 +27,7 @@
       "fixed": 78,
       "structure": 80
     },
-    "updated": "2026-11-23T11:41:06+00:00"
+    "updated": "2026-11-23T11:47:28+00:00"
   },
   "EDPB 9/2022": {
     "source": "EDPB 9/2022",
@@ -40,8 +40,8 @@
     "words": null,
     "chunks": {
       "fixed": 79,
-      "structure": 76
+      "structure": 81
     },
-    "updated": "2026-11-23T11:41:13+00:00"
+    "updated": "2026-11-23T11:47:32+00:00"
   }
 }

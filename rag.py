@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -18,7 +19,8 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-INDEX_DIR = ROOT / "index"
+# RAG_INDEX_DIR lets tests point at a copy of the index; normally it is index/.
+INDEX_DIR = Path(os.environ.get("RAG_INDEX_DIR") or ROOT / "index")
 CHROMA_DIR = INDEX_DIR / "chroma"
 QUERY_CACHE = INDEX_DIR / "query_cache.json"
 DOCUMENTS_FILE = INDEX_DIR / "documents.json"
@@ -245,3 +247,95 @@ def format_results(chunks: list[dict]) -> str:
             f"Document: {c['title']}{page}\nSection: {c['section']}\n\n{c['text']}"
         )
     return "\n\n---\n\n".join(parts)
+
+
+# --------------------------------------------------------------------------- citations
+
+CITATION = re.compile(r"\[([^\[\]|]{2,40}?)\s*\|\s*([^\[\]]{2,60}?)\]")
+RESULT_HEADER = re.compile(r"^Result \d+: \[([^\]|]+?) \| ([^\]]+?)\]\s*$", re.M)
+ROMAN_VALUES = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10,
+                "xi": 11, "xii": 12, "xiii": 13, "xiv": 14, "xv": 15}
+
+
+def find_citations(answer: str) -> list[tuple[str, str]]:
+    """All [source | location] labels in an answer."""
+    return [(s.strip(), l.strip()) for s, l in CITATION.findall(answer)]
+
+
+def retrieved_labels(tool_output: str) -> list[tuple[str, str]]:
+    """The [source | location] labels of the passages in one search result."""
+    return [(s.strip(), l.strip()) for s, l in RESULT_HEADER.findall(tool_output)]
+
+
+def _point(text: str, context: tuple | None = None) -> tuple | None:
+    """Parse one location into a comparable (kind, major, minor) tuple.
+    'Art. 33(1)' -> ('art', 33, 1); 'para. 29' -> ('para', 29, 0); 'Annex ex. iv' -> ('annex', 4, 0).
+    A bare '(4)' or '31' or 'iii' continues the kind/major of `context` (the start of a range)."""
+    t = text.strip().lower().replace("article", "art.").replace("paragraphs", "para.").replace("paragraph", "para.")
+    if m := re.match(r"^art\.?\s*(\d+)\s*(?:\((\w+)\))?", t):
+        minor = m.group(2)
+        return ("art", int(m.group(1)), _minor(minor))
+    if m := re.match(r"^paras?\.?\s*(\d+)", t):
+        return ("para", int(m.group(1)), 0)
+    if m := re.match(r"^annex(?:\s*b)?\s*(?:ex\.?|example)?\s*([ivx]+)\b", t):
+        return ("annex", ROMAN_VALUES.get(m.group(1), 0), 0)
+    if context:
+        if context[0] == "art" and (m := re.match(r"^\((\w+)\)", t)):
+            return ("art", context[1], _minor(m.group(1)))
+        if context[0] == "para" and t.isdigit():
+            return ("para", int(t), 0)
+        if context[0] == "annex" and t in ROMAN_VALUES:
+            return ("annex", ROMAN_VALUES[t], 0)
+    if t.startswith("sec."):
+        return ("sec", t, 0)
+    return None
+
+
+def _minor(value: str | None) -> int:
+    if value is None:
+        return 0
+    return int(value) if value.isdigit() else 100 + ord(value[0])   # points (a), (b) after numbers
+
+
+def _range(location: str) -> tuple | None:
+    parts = re.split(r"\s*[–-]\s*(?=[\(\w])", location, maxsplit=1)
+    start = _point(parts[0])
+    if start is None:
+        return None
+    end = _point(parts[1], start) if len(parts) > 1 else start
+    return start, (end or start)
+
+
+def location_covered(cited: str, passage: str) -> bool:
+    """Is the cited location inside the location span of a retrieved passage?
+    'Art. 33(1)' is inside 'Art. 33(1)–(4)'; 'Art. 33' (whole article) counts if the passage is part of it."""
+    c, p = _range(cited), _range(passage)
+    if not c or not p:
+        return cited.strip().lower() == passage.strip().lower()
+    (ck, cmaj, cmin), _ = c
+    (pk, pmaj, pmin), (_, emaj, emin) = p
+    if ck != pk:
+        return False
+    if ck == "sec":
+        return cmaj == pmaj
+    if not (pmaj <= cmaj <= emaj):
+        return False
+    if ck != "art" or cmin == 0:
+        return True
+    if pmaj == emaj:
+        return pmin <= cmin <= emin or pmin == 0
+    # span across articles, e.g. Art. 32(4)–Art. 33(2)
+    if cmaj == pmaj:
+        return cmin >= pmin
+    if cmaj == emaj:
+        return emin == 0 or cmin <= emin
+    return True
+
+
+def check_citations(answer: str, retrieved: list[tuple[str, str]]) -> tuple[list, list]:
+    """Split the answer's citations into (valid, invalid) against the retrieved labels."""
+    valid, invalid = [], []
+    for source, location in find_citations(answer):
+        ok = any(source.lower() == s.lower() and location_covered(location, l) for s, l in retrieved)
+        (valid if ok else invalid).append(f"[{source} | {location}]")
+    return valid, invalid

@@ -247,7 +247,6 @@ def annex_table_units(page, page_no: int, section: str, units: list[Unit]) -> No
     several pages. Plain text extraction interleaves the columns, so read it as a table and
     assign each cell to a column by its x position; rows that do not start with a roman
     numeral continue the previous example."""
-    columns = ["Example", "Notify the supervisory authority?", "Notify the data subjects?", "Notes/recommendations"]
     bounds = [180, 294, 403]
     for table in page.find_tables():
         for row in table.rows:
@@ -266,13 +265,23 @@ def annex_table_units(page, page_no: int, section: str, units: list[Unit]) -> No
             if m and m.group(1):
                 label = m.group(1)
                 values[0] = m.group(2)
-                units.append(Unit(f"Annex ex. {label}", "annex", section, "", page_no, [f"Annex ex. {label}", "Annex"]))
+                units.append(Unit(f"Annex ex. {label}", f"Annex ex. {label}", section, "", page_no, [f"Annex ex. {label}", "Annex"]))
                 units[-1].parts = values
-            elif units and hasattr(units[-1], "parts"):
-                units[-1].parts = [(a + " " + b).strip() for a, b in zip(units[-1].parts, values)]
-    for u in units:
-        if hasattr(u, "parts") and not u.text:
-            u.text = " ".join(f"{name}: {value}" for name, value in zip(columns, u.parts) if value)
+            else:   # continues the last example, even if a stray line was saved in between
+                last = next((u for u in reversed(units) if hasattr(u, "parts")), None)
+                if last is not None:
+                    last.parts = [(a + " " + b).strip() for a, b in zip(last.parts, values)]
+
+
+ANNEX_COLUMNS = ["Notify the supervisory authority?", "Notify the data subjects?", "Notes/recommendations"]
+
+
+def annex_text(u: Unit) -> str:
+    """Built once all pages are read, so a row continued on the next page is complete.
+    The example's own label goes in the text, so a passage can be cited precisely."""
+    label = u.loc.replace("Annex ex. ", "")
+    rest = " ".join(f"{name} {value}" for name, value in zip(ANNEX_COLUMNS, u.parts[1:]) if value)
+    return f"Example {label}: {u.parts[0]} {rest}".strip()
 
 
 def extract_pdf(path: Path, start_anywhere: bool = False) -> list[Unit]:
@@ -346,6 +355,7 @@ def extract_pdf(path: Path, start_anywhere: bool = False) -> list[Unit]:
         flush()
     for u in units:
         if hasattr(u, "parts"):
+            u.text = annex_text(u)
             del u.parts
     if not units and not start_anywhere:     # a PDF without a preface heading
         return extract_pdf(path, start_anywhere=True)
@@ -395,7 +405,8 @@ def span(locs: list[str]) -> str:
     first, last = finest[0], finest[-1]
     if first == last:
         return first
-    a, b = re.match(r"^(.*?)(\d+|\(\w+\))$", first), re.match(r"^(.*?)(\d+|\(\w+\))$", last)
+    pattern = r"^(.*?)(\d+|\(\w+\)|(?<=ex\. )[ivx]+)$"
+    a, b = re.match(pattern, first), re.match(pattern, last)
     if a and b and a.group(1) == b.group(1):
         return f"{first}–{b.group(2)}"
     return f"{first}–{last}"

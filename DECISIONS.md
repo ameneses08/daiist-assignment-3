@@ -104,6 +104,10 @@ body = 11 pt, headings = 12/13/16 pt, footnotes = 10 pt, footnote markers = 7 pt
 3. **Annex B table of 10 breach examples scrambled** (plain extraction interleaves the 4 columns)
    → read as a table, each cell assigned to its column by x-position, rows continued across pages.
    This table is the most useful part for a small business ("ransomware", "email sent to wrong list").
+   Two follow-up bugs found by testing search: a row continued on the next page was cut off
+   (fixed by building each example's text only after all pages are read), and merged examples had
+   no label in their text (fixed: each example is its own chunk, starting "Example iv: …", so it
+   can be cited as `[EDPB 9/2022 | Annex ex. iv]`).
 4. Page footers ("Adopted 7"), tables of contents and the title/preamble pages removed.
 
 **Why pdfplumber over pypdf.** pypdf reported wrong font sizes for the consent PDF, so footnotes
@@ -173,3 +177,79 @@ fewer words in the prompt (cheaper, less noise).
 
 **Status.** Both designs indexed on 23 Nov: `corpus_fixed` 327 chunks, `corpus_structure` 343
 chunks, 670 embeddings in total (index/ = 12 MB). The hybrid variant reuses `corpus_structure`.
+
+---
+
+## D12 · MCP tools: what `search` and `add_document` do  *(add-document policy: to confirm)*
+
+**`search(query)`** returns the 5 best passages, each headed by its citation `[source | location]`,
+the document, page and section. Only a `query` argument — no source filter the model could
+misuse to hide relevant passages. It uses the design chosen by the hit-rate numbers (D11).
+
+**`add_document(path)`** imports `index.py`'s own pipeline (`chunk_file`, `embed_and_store`) —
+the server never has a second copy of the chunking logic.
+
+**When the document is already indexed** (my policy):
+
+| Situation | What happens | Why |
+|---|---|---|
+| Same file, same content | Skipped, 0 embeddings | Re-adding must not waste quota or duplicate passages (duplicates would crowd out other results) |
+| Same name, changed content (e.g. a new version) | Replaced: changed chunks embedded, removed passages deleted | Answers must not mix the old and the new version |
+| New file | Added | |
+
+**Tool descriptions matter.** The docstring is all the model sees, so it says what the corpus
+covers, when to search again with other words, the citation format, and that `add_document`
+changes the index for everyone (only when the user asks).
+
+---
+
+## D13 · AGENTS.md: the assistant's rules  *(draft by Claude — mine to review and edit)*
+
+Ten rules, each with its reason. The core four: **search before every answer**; **answer only
+from retrieved passages**; **cite every claim** with the exact `[source | location]` label;
+**refuse with a fixed sentence** — "I can't answer this from the documents I have." — plus where
+to ask (AEPD or a lawyer) when the passages don't answer.
+
+**Why a fixed refusal sentence.** Code can then count refusals exactly (correct refusal on an
+unanswerable question vs. wrong refusal on an answerable one) without an LLM judging it.
+
+**Why "search again before refusing" (up to 3 searches).** Refusing too early is also a failure
+(a *wrong refusal*); a second search with other words often finds the passage.
+
+**Why list out-of-scope topics** (national law, the Digital Omnibus, specific companies' fines).
+Those are where a model is most tempted to answer from memory.
+
+---
+
+## D14 · Agent model: `gemini-3-flash-preview`
+
+**Why.** `gemini-2.5-flash` is no longer available to new keys. Google's suggested replacement
+`gemini-3.8-flash` was overloaded on 23 Nov (503 errors; the agent hung on retries) and
+`gemini-3.5-flash` took 25 s for a one-word reply; `gemini-3-flash-preview` answered in ~1 s.
+Default temperature (Google advises not lowering it for Gemini 3).
+
+**Trade-off.** A "preview" model may change or be retired; the model name is recorded with every
+answer in the evaluation results, so results stay traceable.
+
+---
+
+## D15 · Harness guardrails (agent.py)
+
+| Guardrail | How | Why |
+|---|---|---|
+| **Approval before `add_document`** | LangChain `HumanInTheLoopMiddleware`; asks "Approve? [y/N]" on the terminal; with no terminal (evaluation, check.py) it rejects | Adding a document changes every later answer and spends quota — a human decides |
+| **Call limits** | ≤ 4 tool calls and ≤ 8 model calls per question | Stops loops; caps cost per question |
+| **Citation check** (my extra guardrail) | Every `[source \| location]` must lie inside a passage search actually returned, and a non-refusal must cite something. One chance to fix; then the answer is withheld and replaced by the refusal | Directly targets the costly failure — a confident claim with no support. Code can check it exactly, no LLM needed |
+
+**It fired on the first test** (`eval/examples/guardrail_citation_fired.txt`): the draft cited
+`[GDPR | Art. 33(5)]` (record-keeping), but search had only returned Art. 33(1)–(4). The model
+was told, rewrote the answer with valid citations, and passed. **Limit:** it checks that the
+cited passage was retrieved, not that it says what the claim says — that's the judge's job (D-eval).
+
+---
+
+## D16 · MCP tools reach the agent through a small bridge, not `langchain-mcp-adapters`
+
+**Why.** `langchain-mcp-adapters` 0.3.1 is incompatible with `mcp` 2.3 (import error), and `mcp`
+2.3 is what `check.py` and the server use. ~15 lines in `agent.py` start `server.py` over stdio,
+list its tools and wrap each as a LangChain tool — the agent uses the same server as the editor.
